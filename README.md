@@ -1,110 +1,124 @@
-# Offline Python Package Downloader
+# Offline Python Packager: Wheelhouse Downloader & Local Mirror
 
-![Python Version](https://img.shields.io/badge/python-3.8+-blue.svg)
+![Python Version](https://img.shields.io/badge/python-3.10+-blue.svg)![License](https://img.shields.io/badge/license-MIT-green.svg)
 
-A powerful and efficient Python script that downloads all packages and their dependencies from a `requirements.txt` file into a local directory. This creates a portable "wheelhouse" that can be used to install packages on a machine with no internet access.
+A set of powerful Python scripts to download all necessary packages and dependencies from a `requirements.txt` file and serve them as a local, offline-accessible `pip` mirror. Ideal for air-gapped environments, CI/CD caching, or managing a controlled set of packages.
 
 ## Key Features
 
--   **Offline Installation Ready**: Creates a complete bundle of wheel (`.whl`) files for fully offline setups.
--   **Full Dependency Resolution**: Automatically downloads all dependencies and sub-dependencies for every library listed.
--   **Blazing Fast & Efficient**: Uses multithreading to download up to 10 packages in parallel, drastically reducing wait times.
--   **Intelligent Error Handling**: If a package fails to download due to version incompatibility, the script stops and provides smart suggestions for compatible versions.
--   **Skips Duplicates**: Automatically detects already downloaded packages and skips them, making it fast to resume after fixing an error.
--   **Automatic Build Tool Management**: Installs and manages necessary build dependencies like `setuptools` and `pybind11` to handle packages that need to be compiled from source.
+-   **Complete Dependency Resolution**: Downloads every sub-dependency for each library in your `requirements.txt`.
+-   **High-Speed Parallel Downloads**: Uses multithreading to download up to 10 packages simultaneously, dramatically speeding up the process.
+-   **Smart & Resumable**: Automatically skips packages that have already been downloaded, allowing you to easily resume after interruptions or additions.
+-   **Build-From-Source Ready**: Pre-installs necessary build tools (`setuptools`, `wheel`, `pybind11`) to handle packages that don't have pre-compiled wheels for your system.
+-   **Offline Mirror Creation**: Includes a script to organize the downloaded wheels into a PEP 503-compliant "simple" repository.
+-   **Easy to Serve**: Host your local mirror with a single command using Python's built-in web server.
 
-## Requirements
+## Prerequisites
 
--   **Python 3.8+** (Tested on Python 3.12)
--   A `requirements.txt` file listing the packages to download.
+-   Python 3.10 or newer.
+-   `pip` (usually included with Python).
 
-## How to Use
+## Quickstart Guide
 
-#### Step 1: Create your `requirements.txt`
+Follow these steps to create a complete, offline repository of your project's dependencies.
 
-Create a file named `requirements.txt` in the same directory as the script. List one package per line. You can specify exact versions or let pip choose the latest.
+### Step 1: Clone or Download the Scripts
+
+Make sure you have the following files in your project directory:
+-   `download_wheels.py`
+-   `create_mirror.py`
+
+### Step 2: Prepare Your `requirements.txt`
+
+Create or update the `requirements.txt` file in the same directory. List all your direct Python dependencies with their versions.
 
 **Example `requirements.txt`:**
-
-```txt
-# You can specify exact versions
-pandas==2.2.2
-numpy==1.26.4
+```
+bcrypt==3.2.0
+boto3==1.34.10
+fastapi==0.104.1
 matplotlib==3.8.4
-
-# Or let pip find the latest version
+numpy==1.26.4
 requests
-fastapi
+# ...and so on
 ```
 
-#### Step 2: Save the Script
+### Step 3: Download All Packages
 
-Save the provided Python code as `download_wheels.py` in the same directory.
-
-#### Step 3: Run from your Terminal
-
-Open a terminal or command prompt, navigate to the directory, and run the script:
+Run the main download script. It will read your `requirements.txt`, create a `wheelhouse` directory, and download every package and dependency into it.
 
 ```bash
 python download_wheels.py
 ```
 
-The script will create a `wheelhouse` directory and begin downloading all necessary files.
+The script will show progress and use multiple threads for speed. If it encounters an error with a specific package, it will stop and provide helpful suggestions (see Troubleshooting section).
+
+### Step 4: Create the Mirror Structure
+
+Once the `wheelhouse` is fully populated, run the `create_mirror.py` script. This organizes the flat list of wheels into the directory structure `pip` expects.
+
+```bash
+python create_mirror.py
+```
+This will create a new directory named `mirror/` containing the organized packages.
+
+### Step 5: Run the Local Mirror
+
+Serve the newly created `mirror` directory using Python's built-in web server.
+
+1.  Navigate into the `mirror` directory:
+    ```bash
+    cd mirror
+    ```
+
+2.  Start the server:
+    ```bash
+    python -m http.server 8000
+    ```
+Your local `pip` mirror is now running and accessible at `http://localhost:8000/simple/`. Keep this terminal window open.
+
+## Using Your Local Mirror
+
+You can now instruct `pip` to install packages from your local mirror instead of the public PyPI. Open a **new terminal** for this.
+
+#### Option A: Install Exclusively from Your Mirror (Offline Mode)
+
+This command forces `pip` to only use your local repository. It will fail if a package is not found in your mirror.
+
+```bash
+pip install numpy --index-url http://localhost:8000/simple/
+```
+
+#### Option B: Use Your Mirror as the Primary Source (Recommended)
+
+This command tells `pip` to look in your local mirror first. If a package isn't found, it will fall back to the public PyPI.
+
+```bash
+pip install some-new-package --extra-index-url http://localhost:8000/simple/
+```
 
 ## Troubleshooting
 
-The most common error is when a specific package version is not compatible with your Python version (e.g., trying to download a package for Python 3.10 when you are running Python 3.12).
+The most common issue is a package version being incompatible with your Python version (e.g., trying to install a package for Python 3.8 on Python 3.12).
 
-**Example Error Output:**
-
+**Example Error:**
 ```
-  └── !!! ERROR downloading numpy==1.24.4 !!!
------------------ PIP ERROR OUTPUT -----------------
+!!! ERROR downloading numpy==1.24.4 !!!
+...
 ModuleNotFoundError: No module named 'distutils.msvccompiler'
-----------------------------------------------------
-
---- ACTION REQUIRED ---
-The package 'numpy==1.24.4' failed to download. It is likely not compatible with your system (Python 3.12).
-Please MANUALLY UPDATE your requirements.txt file with a different version and run the script again.
-  - Suggestion: numpy==1.26.4 (Latest in 1.26.x series with Py3.12 support)
-  - Suggestion: numpy (To get the absolute latest version)
 ```
 
-**How to Fix:**
-
-1.  Read the suggestion provided by the script.
+**Solution:**
+1.  Read the error message from the script. It will suggest compatible versions.
 2.  Open your `requirements.txt` file.
 3.  Update the version number of the failing package (e.g., change `numpy==1.24.4` to `numpy==1.26.4`).
-4.  Save the file and run the script again. It will skip the already-downloaded packages and just try the one you fixed.
+4.  Save the file and re-run `python download_wheels.py`. The script will skip the packages it already has and just download the corrected one.
 
-## Using the `wheelhouse` for Offline Installation
+## File Descriptions
 
-After the script finishes, you will have a `wheelhouse` directory full of `.whl` files. To use these for an offline installation:
+-   **`download_wheels.py`**: The main workhorse. A multithreaded downloader that fetches all packages and dependencies listed in `requirements.txt` into the `wheelhouse/` directory.
+-   **`create_mirror.py`**: The organizer. Takes the flat `wheelhouse/` directory and structures it into a PEP 503-compliant simple repository inside the `mirror/` directory.
 
-1.  Copy the entire `wheelhouse` directory to the target machine (the one without internet access).
-2.  Copy your `requirements.txt` file to the same machine.
-3.  Open a terminal on the offline machine, navigate to the location of the files, and run the following command:
+## License
 
-```bash
-pip install --no-index --find-links=./wheelhouse -r requirements.txt
-```
-
--   `--no-index`: Tells pip to not look for packages on the Python Package Index (PyPI).
--   `--find-links=./wheelhouse`: Tells pip to look for the required files in your local `wheelhouse` directory instead.
-
-## Customization
-
-You can easily configure the script by changing the constants at the top of the file:
-
-```python
-# --- Configuration ---
-# The name of the requirements file
-requirements_file = "requirements.txt"
-# The directory to download the wheel files to
-output_directory = "wheelhouse"
-# Number of parallel downloads
-MAX_WORKERS = 10
-# --- End Configuration ---
-```
-
----
+This project is licensed under the MIT License. See the `LICENSE` file for details.
