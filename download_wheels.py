@@ -13,27 +13,35 @@ output_directory = "wheelhouse"
 # Number of parallel downloads
 MAX_WORKERS = 10
 # A list of packages that are required to build other packages from source.
-BUILD_DEPENDENCIES = ["wheel", "setuptools", "pybind11"]
+BUILD_DEPENDENCIES = ["wheel", "setuptools", "pip"]
 
-# --- NEW: Define all target platforms for package downloads ---
-# You can add more platforms here if needed.
-# Common platform tags:
-# - Windows 64-bit: win_amd64
-# - Linux 64-bit: manylinux2014_x86_64 (very compatible)
-# - macOS (Intel): macosx_10_9_x86_64
-# - macOS (Apple Silicon): macosx_11_0_arm64
+# --- Target Platform Configuration ---
+# Define the Python version and platforms you want to download packages for.
+# manylinux2014 is used for broad compatibility across most Linux distributions.
 TARGET_PYTHON_VERSION = "3.12"
+TARGET_PYTHON_ABI_TAG = f"cp{TARGET_PYTHON_VERSION.replace('.', '')}" # e.g., "cp312"
+
 TARGET_PLATFORMS = [
     {
         "name": "Windows (64-bit)",
         "platform_tag": "win_amd64",
-        "abi": f"cp{TARGET_PYTHON_VERSION.replace('.', '')}", # e.g., "cp312"
     },
     {
-        "name": "Linux (64-bit)",
+        "name": "Windows (32-bit)",
+        "platform_tag": "win32",
+    },
+    {
+        "name": "Linux (64-bit, x86_64)",
         "platform_tag": "manylinux2014_x86_64",
-        "abi": f"cp{TARGET_PYTHON_VERSION.replace('.', '')}", # e.g., "cp312"
-    }
+    },
+    {
+        "name": "Linux (32-bit, i686)",
+        "platform_tag": "manylinux2014_i686",
+    },
+    {
+        "name": "Linux (ARM 64-bit, aarch64)",
+        "platform_tag": "manylinux2014_aarch64",
+    },
 ]
 # --- End Configuration ---
 
@@ -62,21 +70,27 @@ def install_build_dependencies():
 
 def process_single_requirement(req_tuple):
     """
-    Processes a single requirement for all target platforms.
-    This function is designed to be called by a worker thread.
+    Processes a single requirement, downloading it and its dependencies for all
+    target platforms. This function is designed to be called by a worker thread.
     """
-    index, total, req, downloaded_files = req_tuple
-    package_name = re.split(r'[=<>~!]', req)[0].lower().replace('_', '-')
+    index, total, req = req_tuple
 
+    # This function is called for each *line* in requirements.txt
+    # We loop through platforms inside this function.
     for platform_info in TARGET_PLATFORMS:
         platform_name = platform_info["name"]
         platform_tag = platform_info["platform_tag"]
-        abi_tag = platform_info["abi"]
+        
+        # We check for existing files before every download attempt to avoid
+        # re-downloading dependencies that another package already pulled in.
+        downloaded_files = os.listdir(output_directory)
 
         with print_lock:
             print(f"[{index}/{total}] Processing: {req} for {platform_name}")
 
-        # --- Check if a matching wheel for this platform is already downloaded ---
+        # Check if a wheel for the *main package* already exists for this platform.
+        # This is a simple check; pip will handle dependencies internally.
+        package_name = re.split(r'[=<>~!]', req)[0].lower().replace('_', '-')
         is_downloaded = any(
             f.lower().startswith(package_name) and platform_tag in f.lower()
             for f in downloaded_files
@@ -89,28 +103,27 @@ def process_single_requirement(req_tuple):
 
         # --- If not downloaded, proceed to download ---
         try:
+            # Note: The `--no-deps` flag is REMOVED to ensure all dependencies are downloaded.
             command = [
                 sys.executable, "-m", "pip", "download",
                 "--only-binary=:all:",
-                "--no-deps",
                 "--platform", platform_tag,
                 "--python-version", TARGET_PYTHON_VERSION,
                 "--implementation", "cp",
-                "--abi", abi_tag,
+                "--abi", TARGET_PYTHON_ABI_TAG,
                 "-d", output_directory,
                 req,
             ]
             subprocess.run(command, check=True, capture_output=True, text=True)
             with print_lock:
-                print(f"  └── Success: Downloaded {req} for {platform_name}")
+                print(f"  └── Success: Downloaded {req} and its dependencies for {platform_name}")
 
         except subprocess.CalledProcessError as e:
-            # On error, return the error details for the main thread to handle
             error_output = e.stderr.strip()
             # If a binary wheel doesn't exist, pip gives a specific error.
-            if f"Could not find a version that satisfies the requirement {req}" in error_output:
+            if f"Could not find a version that satisfies the requirement" in error_output:
                  with print_lock:
-                    print(f"  └── WARNING: Could not find a pre-built binary for {req} on {platform_name}. This is common for some packages.")
+                    print(f"  └── WARNING: Could not find a pre-built binary for {req} (or one of its dependencies) on {platform_name}.")
                     print(f"     Pip Error: {error_output.splitlines()[-1]}")
             else:
                 # For other errors, stop the script
@@ -121,16 +134,14 @@ def process_single_requirement(req_tuple):
 def download_packages_multithreaded():
     """
     Reads the requirements file and uses a thread pool to download packages
-    in parallel for all specified platforms.
+    and their dependencies in parallel for all specified platforms.
     """
-    print(f"--- Step 2: Downloading packages from {requirements_file} using up to {MAX_WORKERS} threads ---")
-    print(f"Targeting Python {TARGET_PYTHON_VERSION} for platforms: {', '.join([p['name'] for p in TARGET_PLATFORMS])}\n")
-
+    print(f"--- Step 2: Downloading packages and all dependencies from {requirements_file} ---")
+    platform_names = ', '.join([p['name'] for p in TARGET_PLATFORMS])
+    print(f"Targeting Python {TARGET_PYTHON_VERSION} for platforms: {platform_names}\n")
 
     if not os.path.exists(output_directory):
         os.makedirs(output_directory)
-    # We list files once at the beginning for the threads to use
-    downloaded_files = os.listdir(output_directory)
 
     try:
         with open(requirements_file, "r") as f:
@@ -141,7 +152,7 @@ def download_packages_multithreaded():
         return
 
     # Create a list of tasks for the thread pool
-    tasks = [(i+1, len(requirements), req, downloaded_files) for i, req in enumerate(requirements)]
+    tasks = [(i + 1, len(requirements), req) for i, req in enumerate(requirements)]
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         results = executor.map(process_single_requirement, tasks)
@@ -155,14 +166,15 @@ def download_packages_multithreaded():
                     print(error_output)
                     print("----------------------------------------------------")
                     print("\n--- ACTION REQUIRED ---")
-                    print(f"The package '{failed_req}' failed to download for {platform_name}.")
-                    print("Please check the package's availability on PyPI for this platform or update your requirements.txt file.")
+                    print(f"The package '{failed_req}' (or one of its dependencies) failed to download for {platform_name}.")
+                    print("This usually means a pre-built wheel is not available on PyPI for that specific platform.")
 
-                print("\nScript stopped due to a fatal error. Please fix the issue and restart.")
+                print("\nScript stopped due to a fatal error. Please check the package's availability and restart.")
                 executor.shutdown(wait=False, cancel_futures=True)
                 return
 
-    print(f"\nAll packages successfully processed for all target platforms!")
+    print(f"\nAll packages and their dependencies successfully processed for all target platforms!")
+    print(f"Files are located in the '{output_directory}' directory.")
 
 
 if __name__ == "__main__":
